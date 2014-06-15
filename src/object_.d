@@ -2505,6 +2505,8 @@ unittest
     int[] a = [1, 2, 3, 4];
     int[] b = a[1 .. $];
     int[] c = a[1 .. $ - 1];
+    // NOTE: next assert only true if GC.malloc overallocates
+    // and reports it via alloc_size parameter
     assert(a.capacity != 0);
     assert(a.capacity == b.capacity + 1); //both a and b share the same tail
     assert(c.capacity == 0);              //an append to c must relocate c.

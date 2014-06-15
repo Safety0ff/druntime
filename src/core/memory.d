@@ -423,7 +423,7 @@ struct GC
      *
      * Returns:
      *  A reference to the allocated memory on success or null if sz is
-     *  zero.  On failure, the original value of p is returned.
+     *  zero.  On failure, or if no action was taken null is returned.
      *
      * Throws:
      *  OutOfMemoryError on allocation failure.

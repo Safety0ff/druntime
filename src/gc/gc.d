@@ -22,7 +22,7 @@ module gc.gc;
 //debug = PRINTF_TO_FILE;       // redirect printf's ouptut to file "gcx.log"
 //debug = LOGGING;              // log allocations / frees
 //debug = MEMSTOMP;             // stomp on memory
-//debug = SENTINEL;             // add underrun/overrrun protection
+debug = SENTINEL;             // add underrun/overrrun protection
 //debug = PTRCHECK;             // more pointer checking
 //debug = PTRCHECK2;            // thorough but slow pointer checking
 //debug = PROFILING;            // measure performance of various steps.
@@ -275,6 +275,11 @@ class GC
         if (!gcx)
             onOutOfMemoryError();
         gcx.initialize();
+        debug (SENTINEL)
+        {
+            import core.stdc.stdio : printf;
+            printf("Using sentinel GC\n");
+        }
     }
 
 
@@ -335,6 +340,7 @@ class GC
 
             if (pool)
             {
+                sentinel_Invariant(p);
                 auto biti = cast(size_t)(p - pool.baseAddr) >> pool.shiftBy;
 
                 oldb = gcx.getBits(pool, biti);
@@ -366,6 +372,7 @@ class GC
 
             if (pool)
             {
+                sentinel_Invariant(p);
                 auto biti = cast(size_t)(p - pool.baseAddr) >> pool.shiftBy;
 
                 oldb = gcx.getBits(pool, biti);
@@ -398,6 +405,7 @@ class GC
 
             if (pool)
             {
+                sentinel_Invariant(p);
                 auto biti = cast(size_t)(p - pool.baseAddr) >> pool.shiftBy;
 
                 oldb = gcx.getBits(pool, biti);
@@ -424,7 +432,7 @@ class GC
                 *alloc_size = 0;
             return null;
         }
-
+        size += SENTINEL_EXTRA;
         void* p = void;
         size_t localAllocSize = void;
         if(alloc_size is null) alloc_size = &localAllocSize;
@@ -436,6 +444,14 @@ class GC
             gcLock.lock();
             p = mallocNoSync(size, bits, alloc_size, ti);
             gcLock.unlock();
+        }
+
+        debug (SENTINEL)
+        {
+            size -= SENTINEL_EXTRA;
+            *alloc_size -= SENTINEL_EXTRA;
+            p = sentinel_add(p);
+            sentinel_init(p, size);
         }
 
         if (!(bits & BlkAttr.NO_SCAN))
@@ -464,7 +480,6 @@ class GC
         if (gcx.running)
             onInvalidMemoryOperationError();
 
-        size += SENTINEL_EXTRA;
         bin = gcx.findBin(size);
         Pool *pool;
 
@@ -521,13 +536,7 @@ class GC
             if (!p)
                 onOutOfMemoryError();
         }
-        debug (SENTINEL)
-        {
-            size -= SENTINEL_EXTRA;
-            p = sentinel_add(p);
-            sentinel_init(p, size);
-            *alloc_size = size;
-        }
+
         gcx.log_malloc(p, size);
 
         if (bits)
@@ -549,7 +558,7 @@ class GC
                 *alloc_size = 0;
             return null;
         }
-
+        size += SENTINEL_EXTRA;
         size_t localAllocSize = void;
         void* p = void;
         if(alloc_size is null) alloc_size = &localAllocSize;
@@ -561,6 +570,14 @@ class GC
             gcLock.lock();
             p = mallocNoSync(size, bits, alloc_size, ti);
             gcLock.unlock();
+        }
+
+        debug (SENTINEL)
+        {
+            size -= SENTINEL_EXTRA;
+            *alloc_size -= SENTINEL_EXTRA;
+            p = sentinel_add(p);
+            sentinel_init(p, size);
         }
 
         memset(p, 0, size);
@@ -577,6 +594,7 @@ class GC
      */
     void *realloc(void *p, size_t size, uint bits = 0, size_t *alloc_size = null, const TypeInfo ti = null) nothrow
     {
+        size += SENTINEL_EXTRA;
         size_t localAllocSize = void;
         auto oldp = p;
         if(alloc_size is null) alloc_size = &localAllocSize;
@@ -588,6 +606,14 @@ class GC
             gcLock.lock();
             p = reallocNoSync(p, size, bits, alloc_size, ti);
             gcLock.unlock();
+        }
+
+        debug (SENTINEL)
+        {
+            size -= SENTINEL_EXTRA;
+            *alloc_size -= SENTINEL_EXTRA;
+            p = sentinel_add(p);
+            sentinel_init(p, size);
         }
 
         if (p !is oldp && !(bits & BlkAttr.NO_SCAN))
@@ -622,8 +648,23 @@ class GC
         else
         {   void *p2;
             size_t psize;
+            auto pool = gcx.findPool(p);
+
+            if (!pool) // not GC owned
+                return null; // ignore
 
             //debug(PRINTF) printf("GC::realloc(p = %p, size = %zu)\n", p, size);
+
+            sentinel_Invariant(p);
+            p = sentinel_sub(p);
+
+            /* NOTE: The following code is only useful if malloc always
+             * reports that alloc_size == size.
+             * It used to do this in SENTINEL version, but some unittest
+             * assume that alloc_size would be > size in certain conditions.
+             * So it has been changed to reporting the actual alloc_size.
+             */
+            version (none) {
             debug (SENTINEL)
             {
                 sentinel_Invariant(p);
@@ -632,21 +673,16 @@ class GC
                 {
                     if (psize)
                     {
-                        Pool *pool = gcx.findPool(p);
+                        auto biti = cast(size_t)(p - pool.baseAddr) >> pool.shiftBy;
 
-                        if (pool)
+                        if (bits)
                         {
-                            auto biti = cast(size_t)(p - pool.baseAddr) >> pool.shiftBy;
-
-                            if (bits)
-                            {
-                                gcx.clrBits(pool, biti, ~BlkAttr.NONE);
-                                gcx.setBits(pool, biti, bits);
-                            }
-                            else
-                            {
-                                bits = gcx.getBits(pool, biti);
-                            }
+                            gcx.clrBits(pool, biti, ~BlkAttr.NONE);
+                            gcx.setBits(pool, biti, bits);
+                        }
+                        else
+                        {
+                            bits = gcx.getBits(pool, biti);
                         }
                     }
                     p2 = mallocNoSync(size, bits, alloc_size, ti);
@@ -656,10 +692,9 @@ class GC
                     memcpy(p2, p, size);
                     p = p2;
                 }
-            }
+            } }
             else
             {
-                auto pool = gcx.findPool(p);
                 psize = pool.getSize(p);     // get allocated size
                 if (psize >= PAGESIZE && size >= PAGESIZE)
                 {
@@ -763,15 +798,16 @@ class GC
             onInvalidMemoryOperationError();
 
         //debug(PRINTF) printf("GC::extend(p = %p, minsize = %zu, maxsize = %zu)\n", p, minsize, maxsize);
+        auto pool = gcx.findPool(p);
+        if (!pool)
+            return 0;
+        sentinel_Invariant(p);
         debug (SENTINEL)
         {
             return 0;
         }
         else
         {
-            auto pool = gcx.findPool(p);
-            if (!pool)
-                return 0;
             auto psize = pool.getSize(p);   // get allocated size
             if (psize < PAGESIZE)
                 return 0;                   // cannot extend buckets
@@ -903,7 +939,7 @@ class GC
             gcx.bucket[bin] = list;
         }
 
-        gcx.log_free(sentinel_add(p));
+        gcx.log_free(p);
     }
 
 
@@ -919,9 +955,14 @@ class GC
         }
 
         gcLock.lock();
-        auto rc = addrOfNoSync(p);
+        auto base = addrOfNoSync(p);
         gcLock.unlock();
-        return rc;
+        if (base)
+        {
+            base = sentinel_add(base);
+            sentinel_Invariant(base);
+        }
+        return base;
     }
 
 
@@ -930,10 +971,7 @@ class GC
     //
     void* addrOfNoSync(void *p) nothrow
     {
-        if (!p)
-        {
-            return null;
-        }
+        assert(p);
 
         return gcx.findBase(p);
     }
@@ -951,9 +989,10 @@ class GC
         }
 
         gcLock.lock();
-        auto rc = sizeOfNoSync(p);
+        auto size = sizeOfNoSync(p);
         gcLock.unlock();
-        return rc;
+
+        return size;
     }
 
 
@@ -966,16 +1005,15 @@ class GC
 
         debug (SENTINEL)
         {
-            p = sentinel_sub(p);
-            size_t size = gcx.findSize(p);
+            auto base = gcx.findBase(p);
+            if (!base)
+                return 0;
+            base = sentinel_add(base);
+            sentinel_Invariant(base);
+            if (p != base) // if p is an interior pointer
+                return 0;
 
-            // Check for interior pointer
-            // This depends on:
-            // 1) size is a power of 2 for less than PAGESIZE values
-            // 2) base of memory pool is aligned on PAGESIZE boundary
-            if (cast(size_t)p & (size - 1) & (PAGESIZE - 1))
-                size = 0;
-            return size ? size - SENTINEL_EXTRA : 0;
+            return gcx.findSize(p) - SENTINEL_EXTRA;
         }
         else
         {
@@ -1007,6 +1045,12 @@ class GC
         gcLock.lock();
         auto rc = queryNoSync(p);
         gcLock.unlock();
+        debug (SENTINEL)
+        if (rc.base)
+        {
+            rc.base = sentinel_add(rc.base);
+            rc.size -= SENTINEL_EXTRA;
+        }
         return rc;
     }
 
@@ -1048,7 +1092,6 @@ class GC
     {
         assert(p);
 
-        sentinel_Invariant(p);
         debug (PTRCHECK)
         {
             Pool*  pool;
@@ -1056,9 +1099,10 @@ class GC
             Bins   bin;
             size_t size;
 
-            p = sentinel_sub(p);
             pool = gcx.findPool(p);
             assert(pool);
+            sentinel_Invariant(p);
+            p = sentinel_sub(p);
             pagenum = pool.pagenumOf(p);
             bin = cast(Bins)pool.pagetable[pagenum];
             assert(bin <= B_PAGE);
@@ -1570,7 +1614,7 @@ struct Gcx
                     if (pn < pool.searchStart) pool.searchStart = pn;
 
                     debug(COLLECT_PRINTF) printf("\tcollecting big %p\n", p);
-                    log_free(sentinel_add(p));
+                    log_free(p);
 
                     size_t n = 1;
                     for (; pn + n < pool.npages; ++n)
@@ -1619,7 +1663,7 @@ struct Gcx
                         toClear |= GCBits.BITS_1 << clearIndex;
 
                         debug(COLLECT_PRINTF) printf("\tcollecting %p\n", p);
-                        log_free(sentinel_add(p));
+                        log_free(p);
 
                         debug (MEMSTOMP) memset(p, 0xF3, size);
                         pool.freebits.set(biti);
@@ -2416,7 +2460,7 @@ struct Gcx
                             }
                         }
 
-                        debug (LOGGING) log_parent(sentinel_add(pool.baseAddr + (biti << pool.shiftBy)), sentinel_add(pbot));
+                        debug (LOGGING) log_parent(pool.baseAddr + (biti << pool.shiftBy), pbot);
                     }
                 }
             }
@@ -2610,7 +2654,7 @@ struct Gcx
                         clrBits(pool, biti, ~BlkAttr.NONE ^ BlkAttr.FINALIZE);
 
                         debug(COLLECT_PRINTF) printf("\tcollecting big %p\n", p);
-                        log_free(sentinel_add(p));
+                        log_free(p);
                         pool.pagetable[pn] = B_FREE;
                         if(pn < pool.searchStart) pool.searchStart = pn;
                         freedpages++;
@@ -2681,7 +2725,7 @@ struct Gcx
 
                                 List *list = cast(List *)p;
                                 debug(COLLECT_PRINTF) printf("\tcollecting %p\n", list);
-                                log_free(sentinel_add(list));
+                                log_free(list);
 
                                 debug (MEMSTOMP) memset(p, 0xF3, size);
 
@@ -3364,9 +3408,9 @@ struct Pool
 
 debug (SENTINEL)
 {
-    const size_t SENTINEL_PRE = cast(size_t) 0xF4F4F4F4F4F4F4F4UL; // 32 or 64 bits
-    const ubyte SENTINEL_POST = 0xF5;           // 8 bits
-    const uint SENTINEL_EXTRA = 2 * size_t.sizeof + 1;
+    enum size_t SENTINEL_PRE = cast(size_t) 0xF4F4F4F4F4F4F4F4UL; // 32 or 64 bits
+    enum ubyte SENTINEL_POST = 0xF5;           // 8 bits
+    enum size_t SENTINEL_EXTRA = 2 * size_t.sizeof + 1;
 
 
     inout(size_t*) sentinel_size(inout void *p) nothrow { return &(cast(inout size_t *)p)[-2]; }
@@ -3402,7 +3446,7 @@ debug (SENTINEL)
 }
 else
 {
-    const uint SENTINEL_EXTRA = 0;
+    enum size_t SENTINEL_EXTRA = 0;
 
 
     void sentinel_init(void *p, size_t size) nothrow

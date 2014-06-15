@@ -12,6 +12,8 @@
 
 module rt.lifetime;
 
+//debug = PRINTF;
+
 import core.stdc.stdlib;
 import core.stdc.string;
 import core.stdc.stdarg;
@@ -680,7 +682,7 @@ Lcontinue:
     {
         curallocsize = curcapacity = offset = 0;
     }
-    debug(PRINTF) printf("_d_arraysetcapacity, p = x%d,%d, newcapacity=%d, info.size=%d, reqsize=%d, curallocsize=%d, curcapacity=%d, offset=%d\n", (*p).ptr, (*p).length, newcapacity, info.size, reqsize, curallocsize, curcapacity, offset);
+    debug(PRINTF) printf("_d_arraysetcapacity, p = %p,%d, newcapacity=%d, info.size=%d, reqsize=%d, curallocsize=%d, curcapacity=%d, offset=%d\n", (*p).ptr, (*p).length, newcapacity, info.size, reqsize, curallocsize, curcapacity, offset);
 
     if(curcapacity >= reqsize)
     {
